@@ -3,6 +3,8 @@ import type { Review } from './schema.ts';
 
 const MARKERS = ['<!-- spartans-pr-review -->', '<!-- spartans-opencode-review -->'];
 const MARKER = MARKERS[0];
+const PR_START = '<!-- Spartans PR review starts here -->';
+const PR_END = '<!-- Spartans PR review ends here -->';
 const BOT = /spartans-bot|github-actions\[bot\]/i;
 const MAX_COMMENTS = 8;
 
@@ -160,11 +162,15 @@ export const applyReview = async (opts: {
 		if (!item.id || !allowedThreads.has(item.id)) continue;
 		console.log(`resolve ${item.id} ${item.reason}`);
 		try {
-			await resolveApi.graphql(`mutation($id:ID!){ resolveReviewThread(input:{threadId:$id}) { thread { isResolved } } }`, {
-				id: item.id,
-			});
+			await resolveThread(reviewApi, item.id);
 		} catch (error) {
 			warn(error);
+			if (opts.resolveToken === opts.reviewToken) continue;
+			try {
+				await resolveThread(resolveApi, item.id);
+			} catch (fallback) {
+				warn(fallback);
+			}
 		}
 	}
 
@@ -178,16 +184,36 @@ export const applyReview = async (opts: {
 
 	if (opts.review.prBody.trim()) {
 		try {
+			const { data: pr } = await reviewApi.pulls.get({
+				owner: opts.owner,
+				repo: opts.repo,
+				pull_number: opts.number,
+			});
 			await reviewApi.pulls.update({
 				owner: opts.owner,
 				repo: opts.repo,
 				pull_number: opts.number,
-				body: opts.review.prBody.trim(),
+				body: mergePrBody(pr.body, opts.review.prBody.trim()),
 			});
 		} catch (error) {
 			warn(error);
 		}
 	}
+};
+
+const resolveThread = (octokit: Octokit, id: string) =>
+	octokit.graphql(`mutation($id:ID!){ resolveReviewThread(input:{threadId:$id}) { thread { isResolved } } }`, { id });
+
+export const mergePrBody = (existing: string | null | undefined, section: string) => {
+	const block = `${PR_START}\n${section}\n${PR_END}`;
+	const current = existing ?? '';
+	const start = current.indexOf(PR_START);
+	const end = current.indexOf(PR_END);
+	if (start !== -1 && end !== -1 && end > start) {
+		return `${current.slice(0, start)}${block}${current.slice(end + PR_END.length)}`;
+	}
+	if (!current.trim()) return block;
+	return `${current.trimEnd()}\n\n${block}`;
 };
 
 const upsertSticky = async (octokit: Octokit, owner: string, repo: string, number: number, summary: string) => {

@@ -1,6 +1,6 @@
 # pr-review
 
-Locked PR review loop for TEC repos. The model gets `git_diff`, `read_file`, `grep`, `glob`, and `submit_review`. It never gets a shell or a GitHub token. The host posts the review as Spartans-Bot and resolves threads with `GITHUB_TOKEN`.
+Locked PR review loop for TEC repos. The model gets `git_diff`, `read_file`, `grep`, `glob`, and `submit_review`. It never gets a shell or a GitHub token. The host posts the review as Spartans-Bot, resolves threads as the app when it can, and only edits the PR description between `<!-- Spartans PR review starts here -->` markers.
 
 Any OpenAI-compatible `/v1` endpoint works. Point `OPENAI_BASE_URL` / `OPENAI_API_KEY` at whatever you have — LLM gateway, vLLM, OpenAI, Azure.
 

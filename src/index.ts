@@ -57,7 +57,8 @@ exact replacement lines
 Severity High, Medium, or Low.
 
 summary: under 120 words — what you reviewed, open count, resolved count.
-prBody: one heading + at most 3 bullets. No test plan.
+prBody: our section only. Do not repeat the author's description. No test plan. List every real change as bullets — grouped points, not file-by-file nits. Skip noise. End with:
+Risk: Low|Medium|High — one short clause only if there's a risk.
 
 Call submit_review exactly once when done.`;
 

@@ -1,6 +1,7 @@
 import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { mergePrBody } from './github.ts';
 import { PathEscapeError, readFile, resolveInWorkspace } from './tools.ts';
 
 const root = await mkdtemp(join(tmpdir(), 'pr-review-'));
@@ -22,6 +23,16 @@ for (const input of ['../etc/passwd', '..', '/etc/passwd', 'src/../../etc/passwd
 		threw = error instanceof PathEscapeError;
 	}
 	if (!threw) throw new Error(`expected PathEscapeError for ${input}`);
+}
+
+const user = '## Summary\n\n- author note';
+const first = mergePrBody(user, '### Bot\n- finding');
+if (!first.startsWith('## Summary') || !first.includes('<!-- Spartans PR review starts here -->')) {
+	throw new Error(`merge should append: ${first}`);
+}
+const second = mergePrBody(first, '### Bot\n- updated');
+if (second.split('## Summary').length !== 2 || second.includes('- finding') || !second.includes('- updated')) {
+	throw new Error(`merge should replace our block only: ${second}`);
 }
 
 console.log('ok');

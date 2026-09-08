@@ -168,7 +168,7 @@ export const createTools = (ws: Workspace, onSubmit: (review: Review) => void) =
 	}),
 	submit_review: tool({
 		description:
-			'Finish. Call once. comments = new findings only (HEAD line numbers). resolve = our open thread ids that are Fixed or Outdated. patches = REST databaseId + new body for stale-but-valid comments. summary ≤120 words. prBody = one heading + ≤3 bullets.',
+			'Finish. Call once. comments = new findings only (HEAD line numbers). resolve = our open thread ids that are Fixed or Outdated. patches = REST databaseId + new body for stale-but-valid comments. summary ≤120 words. prBody = bullets for every real change (not line-by-line nits), then Risk: Low|Medium|High — short clause only if there\'s a risk.',
 		inputSchema: ReviewSchema,
 		execute: async (input) => {
 			onSubmit(input);
