@@ -1,0 +1,142 @@
+name: PR review
+
+on:
+  workflow_call:
+    inputs:
+      runner:
+        type: string
+        default: ubuntu-latest
+      extra_prompt:
+        type: string
+        default: ''
+      max_steps:
+        type: number
+        default: 16
+      app_client_id:
+        type: string
+        default: '4554945'
+      harness_repo:
+        type: string
+        default: TEC-Spartens/pr-review
+      harness_ref:
+        type: string
+        default: main
+      model:
+        type: string
+        default: ai-model
+    secrets:
+      OPENAI_BASE_URL:
+        required: true
+      OPENAI_API_KEY:
+        required: true
+      SPARTANS_BOT_PRIVATE_KEY:
+        required: false
+
+jobs:
+  review:
+    name: PR review
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.draft == false &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      contains(fromJSON('["opened","synchronize","reopened","ready_for_review"]'), github.event.action) &&
+      !contains(github.event.pull_request.title, 'skip-ci') &&
+      !contains(github.event.head_commit.message, 'skip-ci')
+    steps:
+      - name: Authenticate as Spartans-Bot
+        id: app-token
+        continue-on-error: true
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ inputs.app_client_id }}
+          owner: ${{ github.repository_owner }}
+          repositories: |
+            ${{ github.event.repository.name }}
+            pr-review
+          private-key: ${{ secrets.SPARTANS_BOT_PRIVATE_KEY }}
+
+      - name: Checkout Project
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 1
+          persist-credentials: true
+          token: ${{ steps.app-token.outputs.token || github.token }}
+
+      - name: Fetch PR base
+        run: git fetch --no-tags origin ${{ github.event.pull_request.base.sha }}
+
+      - name: Checkout harness
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ inputs.harness_repo }}
+          ref: ${{ inputs.harness_ref }}
+          path: .pr-review
+          token: ${{ steps.app-token.outputs.token || github.token }}
+
+      - name: Use bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install harness
+        working-directory: .pr-review
+        run: bun install --frozen-lockfile
+
+      - name: React watching
+        uses: actions/github-script@v9
+        with:
+          github-token: ${{ steps.app-token.outputs.token || github.token }}
+          script: |
+            await github.rest.reactions.createForIssue({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.pull_request.number,
+              content: 'eyes',
+            });
+
+      - name: Review
+        env:
+          OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_MODEL: ${{ inputs.model }}
+          REVIEW_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
+          RESOLVE_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          EXTRA_PROMPT: ${{ inputs.extra_prompt }}
+          MAX_STEPS: ${{ inputs.max_steps }}
+          WORKSPACE: ${{ github.workspace }}
+          HARNESS_DIR: .pr-review
+        working-directory: ${{ github.workspace }}
+        run: bun .pr-review/src/index.ts
+
+      - name: Remove eyes reaction
+        if: always()
+        uses: actions/github-script@v9
+        with:
+          github-token: ${{ steps.app-token.outputs.token || github.token }}
+          script: |
+            const prNumber = context.payload.pull_request.number;
+            const reactions = await github.rest.reactions.listForIssue({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+              content: 'eyes',
+            });
+            const ours = new Set(['spartans-bot[bot]', 'Spartans-Bot[bot]', 'github-actions[bot]']);
+            for (const reaction of reactions.data) {
+              if (reaction.content !== 'eyes' || !ours.has(reaction.user?.login)) continue;
+              await github.rest.reactions.deleteForIssue({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: prNumber,
+                reaction_id: reaction.id,
+              });
+            }

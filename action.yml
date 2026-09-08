@@ -1,0 +1,49 @@
+name: Spartans PR review
+description: Review a pull request with a locked OpenAI-compatible tool loop
+inputs:
+  extra_prompt:
+    description: Extra instructions appended to the review prompt
+    required: false
+    default: ''
+  max_steps:
+    description: Hard cap on model steps
+    required: false
+    default: '16'
+  review_token:
+    description: Token used to post reviews (Spartans-Bot app token)
+    required: true
+  resolve_token:
+    description: Token used to resolve threads (GITHUB_TOKEN)
+    required: true
+  openai_base_url:
+    description: OpenAI-compatible API origin, with or without /v1
+    required: true
+  openai_api_key:
+    description: OpenAI-compatible API key
+    required: true
+  openai_model:
+    description: Served model id
+    required: false
+    default: ai-model
+runs:
+  using: composite
+  steps:
+    - uses: oven-sh/setup-bun@v2
+    - run: bun install --frozen-lockfile
+      shell: bash
+      working-directory: ${{ github.action_path }}
+    - run: bun "${{ github.action_path }}/src/index.ts"
+      shell: bash
+      working-directory: ${{ github.workspace }}
+      env:
+        OPENAI_BASE_URL: ${{ inputs.openai_base_url }}
+        OPENAI_API_KEY: ${{ inputs.openai_api_key }}
+        OPENAI_MODEL: ${{ inputs.openai_model }}
+        REVIEW_TOKEN: ${{ inputs.review_token }}
+        RESOLVE_TOKEN: ${{ inputs.resolve_token }}
+        EXTRA_PROMPT: ${{ inputs.extra_prompt }}
+        MAX_STEPS: ${{ inputs.max_steps }}
+        WORKSPACE: ${{ github.workspace }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+        BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        HEAD_SHA: ${{ github.event.pull_request.head.sha }}
