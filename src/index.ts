@@ -1,4 +1,4 @@
-import { isStepCount, ToolLoopAgent, wrapLanguageModel, extractReasoningMiddleware, type StepResult, type ToolSet } from 'ai';
+import { isStepCount, ToolLoopAgent, wrapLanguageModel, extractReasoningMiddleware, type ModelMessage, type StepResult, type ToolSet } from 'ai';
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
 import { Octokit } from '@octokit/rest';
 import type { Review } from './schema.ts';
@@ -110,39 +110,50 @@ const model = wrapLanguageModel({
 const maxSteps = Number.isFinite(env.maxSteps) && env.maxSteps > 0 ? env.maxSteps : 14;
 const CONTEXT_CAP = 140_000;
 
+const logStep = (step: StepResult<ToolSet>, prefix = '') => {
+	const toolsUsed = step.toolCalls.map((call) => call.toolName).join(',') || 'none';
+	console.log(
+		`${prefix}step=${step.stepNumber} in=${step.usage.inputTokens ?? 0} out=${step.usage.outputTokens ?? 0} finish=${step.finishReason} tools=${toolsUsed}`,
+	);
+	if (toolsUsed === 'none' && step.text) {
+		console.log(`${prefix}step=${step.stepNumber} text=${step.text.slice(0, 400)}`);
+	}
+};
+
 const agent = new ToolLoopAgent({
 	model,
 	instructions: SYSTEM,
 	tools,
+	toolChoice: 'required',
 	temperature: 0.2,
-	maxOutputTokens: 8192,
-	timeout: { firstChunkMs: 90_000 },
+	maxOutputTokens: 2048,
 	stopWhen: [isStepCount(maxSteps), () => submitted !== undefined, ({ steps }) => isDoomLoop(steps)],
 	prepareStep: ({ stepNumber, steps, messages }) => {
 		const compacted = compactMessages(messages);
 		const lastIn = steps.at(-1)?.usage.inputTokens ?? 0;
+		const lastHadNoTools = steps.at(-1)?.toolCalls.length === 0;
 		const forced =
 			stepNumber >= maxSteps - 1
 				? 'Step budget reached'
-				: lastIn > CONTEXT_CAP
-					? 'Context window filling'
-					: isDoomLoop(steps)
-						? 'Repeated identical tool calls'
-						: undefined;
+				: lastHadNoTools
+					? 'You wrote text instead of calling a tool'
+					: lastIn > CONTEXT_CAP
+						? 'Context window filling'
+						: isDoomLoop(steps)
+							? 'Repeated identical tool calls'
+							: undefined;
 		if (!forced) return { messages: compacted };
 		return {
 			activeTools: ['submit_review'] as ['submit_review'],
+			toolChoice: { type: 'tool' as const, toolName: 'submit_review' as const },
+			maxOutputTokens: 8192,
 			messages: [
 				...compacted,
-				{ role: 'user' as const, content: `${forced}. Call submit_review now with what you have.` },
+				{ role: 'user' as const, content: `${forced}. Call submit_review now. Put comments, summary, and prBody in the tool arguments.` },
 			],
 		};
 	},
-	onStepEnd: (step) => {
-		console.log(
-			`step=${step.stepNumber} in=${step.usage.inputTokens ?? 0} out=${step.usage.outputTokens ?? 0} tools=${step.toolCalls.map((call) => call.toolName).join(',') || 'none'}`,
-		);
-	},
+	onStepEnd: (step) => logStep(step),
 });
 
 const prompt = [
@@ -155,11 +166,29 @@ const prompt = [
 	.filter(Boolean)
 	.join('\n\n');
 
-try {
-	await agent.generate({ prompt, abortSignal: AbortSignal.timeout(10 * 60 * 1000) });
-} catch (error) {
-	console.error(error instanceof Error ? error.message : error);
-	if (!submitted) process.exit(1);
+const abortSignal = AbortSignal.timeout(10 * 60 * 1000);
+const CORRECTION =
+	'Invalid: assistant text is ignored. Call a tool. When finished, call submit_review with comments, summary, and prBody in the tool arguments.';
+
+const run = async (input: { prompt: string } | { messages: ModelMessage[] }) => {
+	try {
+		return await agent.generate({ ...input, abortSignal });
+	} catch (error) {
+		console.error(error instanceof Error ? error.message : error);
+		return undefined;
+	}
+};
+
+let result = await run({ prompt });
+for (let i = 0; i < 2 && !submitted; i++) {
+	console.log('model skipped tools; sending correction');
+	result = await run({
+		messages: [
+			{ role: 'user', content: prompt },
+			...(result?.responseMessages ?? []),
+			{ role: 'user', content: CORRECTION },
+		],
+	});
 }
 
 if (!submitted) {

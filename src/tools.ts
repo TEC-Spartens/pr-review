@@ -190,6 +190,9 @@ export const createTools = (ws: Workspace, onSubmit: (review: Review) => void) =
 			'Finish. Call once. comments = new findings only (HEAD line numbers). resolve = our open thread ids that are Fixed or Outdated. patches = REST databaseId + new body for stale-but-valid comments. summary ≤120 words. prBody = bullets for every real change (not line-by-line nits), then Risk: Low|Medium|High — short clause only if there\'s a risk.',
 		inputSchema: ReviewSchema,
 		execute: async (input) => {
+			if (!input.summary.trim() || !input.prBody.trim()) {
+				return { ok: false, error: 'Need non-empty summary and prBody. Call submit_review again with both filled.' };
+			}
 			onSubmit(input);
 			return { ok: true };
 		},

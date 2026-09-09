@@ -3,8 +3,7 @@
 	"private": true,
 	"type": "module",
 	"scripts": {
-		"start": "bun src/index.ts",
-		"check": "bun src/check.ts"
+		"start": "bun src/index.ts"
 	},
 	"dependencies": {
 		"@ai-sdk/openai-compatible": "^3.0.37",
