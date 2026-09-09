@@ -2,6 +2,7 @@ import { isStepCount, ToolLoopAgent, wrapLanguageModel, extractReasoningMiddlewa
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
 import { Octokit } from '@octokit/rest';
 import type { Review } from './schema.ts';
+import { compactMessages } from './compact.ts';
 import { applyReview, loadThreads } from './github.ts';
 import { createTools, type Workspace } from './tools.ts';
 
@@ -36,8 +37,10 @@ const isDoomLoop = (steps: StepResult<ToolSet>[]) => {
 
 const SYSTEM = `You review a GitHub pull request. You have no shell, no GitHub token, and you must not edit the repo.
 
-Tools: git_diff, read_file, grep, glob, submit_review.
-Start with git_diff. Findings come from the diff. Use read/grep/glob only to check callers and existing logic. grep is exact — empty means not found.
+Tools: git_diff, changed_files, read_file, grep, glob, submit_review.
+Start with git_diff. Findings come from the diff, but do not rubber-stamp it. For each changed function or behavior, grep callers and read the implementation (a slice around the symbol) to see if usage still matches. Prefer changed_files then grep (path:line hits). read_file is a window (offset/limit), not the whole file. Do not glob the whole tree.
+
+Skip linter nits (formatting, import order, class-name order). Report real bugs, regressions, missing tests, or security. Cap 8 new comments.
 
 Skip linter nits (formatting, import order, class-name order). Report real bugs, regressions, missing tests, or security. Cap 8 new comments.
 
@@ -73,7 +76,7 @@ const env = {
 	baseSha: required('BASE_SHA'),
 	headSha: required('HEAD_SHA'),
 	extraPrompt: process.env.EXTRA_PROMPT ?? '',
-	maxSteps: Number(process.env.MAX_STEPS ?? 16),
+	maxSteps: Number(process.env.MAX_STEPS ?? 14),
 	workspace: process.env.WORKSPACE || process.cwd(),
 	harnessDir: process.env.HARNESS_DIR || '.pr-review',
 };
@@ -104,26 +107,33 @@ const model = wrapLanguageModel({
 	middleware: extractReasoningMiddleware({ tagName: 'think' }),
 });
 
-const maxSteps = Number.isFinite(env.maxSteps) && env.maxSteps > 0 ? env.maxSteps : 16;
+const maxSteps = Number.isFinite(env.maxSteps) && env.maxSteps > 0 ? env.maxSteps : 14;
+const CONTEXT_CAP = 140_000;
 
 const agent = new ToolLoopAgent({
 	model,
 	instructions: SYSTEM,
 	tools,
 	temperature: 0.2,
+	maxOutputTokens: 8192,
+	timeout: { firstChunkMs: 90_000 },
 	stopWhen: [isStepCount(maxSteps), () => submitted !== undefined, ({ steps }) => isDoomLoop(steps)],
 	prepareStep: ({ stepNumber, steps, messages }) => {
+		const compacted = compactMessages(messages);
+		const lastIn = steps.at(-1)?.usage.inputTokens ?? 0;
 		const forced =
 			stepNumber >= maxSteps - 1
 				? 'Step budget reached'
-				: isDoomLoop(steps)
-					? 'Repeated identical tool calls'
-					: undefined;
-		if (!forced) return undefined;
+				: lastIn > CONTEXT_CAP
+					? 'Context window filling'
+					: isDoomLoop(steps)
+						? 'Repeated identical tool calls'
+						: undefined;
+		if (!forced) return { messages: compacted };
 		return {
 			activeTools: ['submit_review'] as ['submit_review'],
 			messages: [
-				...messages,
+				...compacted,
 				{ role: 'user' as const, content: `${forced}. Call submit_review now with what you have.` },
 			],
 		};
@@ -146,10 +156,10 @@ const prompt = [
 	.join('\n\n');
 
 try {
-	await agent.generate({ prompt });
+	await agent.generate({ prompt, abortSignal: AbortSignal.timeout(10 * 60 * 1000) });
 } catch (error) {
 	console.error(error instanceof Error ? error.message : error);
-	process.exit(1);
+	if (!submitted) process.exit(1);
 }
 
 if (!submitted) {

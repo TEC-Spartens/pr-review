@@ -3,10 +3,11 @@ import { tool } from 'ai';
 import { z } from 'zod';
 import { ReviewSchema, type Review } from './schema.ts';
 
-const READ_CAP = 100_000;
+const READ_CAP = 40_000;
+const READ_LINES = 200;
 const GREP_HITS = 80;
-const GREP_BYTES = 50_000;
-const DIFF_CAP = 400_000;
+const GREP_BYTES = 20_000;
+const DIFF_CAP = 120_000;
 const GLOB_CAP = 50;
 const IGNORED = new Set(['.git', 'node_modules', '.pr-review']);
 
@@ -55,11 +56,20 @@ const run = async (cmd: string[], cwd: string, cap: number) => {
 
 export const gitDiff = async (ws: Workspace) => {
 	const out = await run(
-		['git', 'diff', ws.baseSha, 'HEAD', '--', '.', `:(exclude)${ws.harnessDir}`],
+		['git', 'diff', '-U20', ws.baseSha, 'HEAD', '--', '.', `:(exclude)${ws.harnessDir}`],
 		ws.root,
 		DIFF_CAP,
 	);
 	return out || '(empty diff)';
+};
+
+export const changedFiles = async (ws: Workspace) => {
+	const out = await run(
+		['git', 'diff', '--name-only', ws.baseSha, 'HEAD', '--', '.', `:(exclude)${ws.harnessDir}`],
+		ws.root,
+		20_000,
+	);
+	return out || '(no files)';
 };
 
 export const readFile = async (ws: Workspace, inputPath: string, offset?: number, limit?: number) => {
@@ -70,8 +80,11 @@ export const readFile = async (ws: Workspace, inputPath: string, offset?: number
 	const raw = await file.text();
 	const lines = raw.split('\n');
 	const start = Math.max((offset ?? 1) - 1, 0);
-	const slice = lines.slice(start, limit ? start + limit : undefined);
-	return truncate(numbered(slice.join('\n'), start + 1), READ_CAP);
+	const take = limit ?? READ_LINES;
+	const slice = lines.slice(start, start + take);
+	const body = truncate(numbered(slice.join('\n'), start + 1), READ_CAP);
+	if (start + take < lines.length) return `${body}\n… ${lines.length - start - take} more lines; pass offset/limit`;
+	return body;
 };
 
 export const grep = async (ws: Workspace, pattern: string, path?: string) => {
@@ -127,12 +140,18 @@ export const globFiles = async (ws: Workspace, pattern: string) => {
 
 export const createTools = (ws: Workspace, onSubmit: (review: Review) => void) => ({
 	git_diff: tool({
-		description: 'Unified diff of this PR (base SHA vs HEAD). Start here. Findings come from this diff.',
+		description:
+			'Unified diff of this PR vs the target branch (−U20). Start here. Findings come from this diff.',
 		inputSchema: z.object({}),
 		execute: async () => gitDiff(ws),
 	}),
+	changed_files: tool({
+		description: 'Paths changed in this PR. Use before globbing the rest of the repo.',
+		inputSchema: z.object({}),
+		execute: async () => changedFiles(ws),
+	}),
 	read_file: tool({
-		description: 'Read a workspace file with line numbers. Optional 1-based offset and line limit.',
+		description: 'Read a workspace file with line numbers. Defaults to 200 lines. Pass 1-based offset and limit to page.',
 		inputSchema: z.object({
 			path: z.string(),
 			offset: z.number().int().positive().optional(),
@@ -148,7 +167,7 @@ export const createTools = (ws: Workspace, onSubmit: (review: Review) => void) =
 	}),
 	grep: tool({
 		description:
-			'Search file contents (rg, else git grep). Exact regex, no fuzzy fallback. Optional path prefix. Use to check callers of symbols in the diff.',
+			'Search file contents. Returns path:line hits only. Exact regex, no fuzzy fallback. Optional path prefix. Use to check callers of symbols in the diff.',
 		inputSchema: z.object({
 			pattern: z.string(),
 			path: z.string().optional(),
@@ -162,7 +181,7 @@ export const createTools = (ws: Workspace, onSubmit: (review: Review) => void) =
 		},
 	}),
 	glob: tool({
-		description: 'List files matching a glob relative to the workspace. Does not search harness or node_modules.',
+		description: 'List files matching a glob. Prefer changed_files for this PR. Does not search harness or node_modules.',
 		inputSchema: z.object({ pattern: z.string() }),
 		execute: async ({ pattern }) => globFiles(ws, pattern),
 	}),
