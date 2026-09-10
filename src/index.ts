@@ -69,7 +69,7 @@ const env = {
 	baseUrl: v1Url(required('OPENAI_BASE_URL')),
 	apiKey: required('OPENAI_API_KEY'),
 	model: process.env.OPENAI_MODEL || 'ai-model',
-	reasoningEffort: process.env.REASONING_EFFORT ?? 'medium',
+	reasoningEffort: process.env.REASONING_EFFORT ?? 'low',
 	reviewToken: required('REVIEW_TOKEN'),
 	resolveToken: process.env.RESOLVE_TOKEN || required('REVIEW_TOKEN'),
 	repository: required('GITHUB_REPOSITORY'),
@@ -138,6 +138,9 @@ const dropDanglingToolCalls = (messages: ModelMessage[]) => {
 	});
 };
 
+// named tool choice is guided decoding on vLLM: no reasoning, so the answer cannot be cut off by max tokens
+let forceSubmit = false;
+
 const agent = new ToolLoopAgent({
 	model,
 	instructions: SYSTEM,
@@ -149,14 +152,15 @@ const agent = new ToolLoopAgent({
 	prepareStep: ({ stepNumber, steps, messages }) => {
 		const compacted = compactMessages(messages);
 		const lastIn = steps.at(-1)?.usage.inputTokens ?? 0;
-		const forced =
-			stepNumber >= maxSteps - 1
+		const forced = forceSubmit
+			? 'Previous turn ended without submit_review'
+			: stepNumber >= maxSteps - 1
 				? 'Step budget reached'
-				: lastIn > CONTEXT_CAP
-					? 'Context window filling'
-					: isDoomLoop(steps)
-						? 'Repeated identical tool calls'
-						: undefined;
+					: lastIn > CONTEXT_CAP
+						? 'Context window filling'
+						: isDoomLoop(steps)
+							? 'Repeated identical tool calls'
+							: undefined;
 		if (!forced) return { messages: compacted };
 		return {
 			activeTools: ['submit_review'] as ['submit_review'],
@@ -182,7 +186,7 @@ const prompt = [
 
 const abortSignal = AbortSignal.timeout(10 * 60 * 1000);
 const CORRECTION =
-	'Invalid turn: assistant text is ignored and truncated output is discarded. Reply with a tool call only, keep reasoning short. When finished, call submit_review with comments, summary, and prBody in the tool arguments.';
+	'Invalid turn: assistant text is ignored and truncated output is discarded. Call submit_review now with comments, summary, and prBody from what you already reviewed.';
 
 const run = async (input: { prompt: string } | { messages: ModelMessage[] }) => {
 	try {
@@ -195,7 +199,8 @@ const run = async (input: { prompt: string } | { messages: ModelMessage[] }) => 
 
 let result = await run({ prompt });
 for (let i = 0; i < 2 && !submitted; i++) {
-	console.log(`model ended with finish=${result?.finishReason ?? 'error'}; sending correction`);
+	console.log(`model ended with finish=${result?.finishReason ?? 'error'}; forcing submit_review`);
+	forceSubmit = true;
 	result = await run({
 		messages: [
 			{ role: 'user', content: prompt },
@@ -207,6 +212,11 @@ for (let i = 0; i < 2 && !submitted; i++) {
 
 if (!submitted) {
 	console.log('no submit_review; posting nothing');
+	process.exit(0);
+}
+
+if (process.env.DRY_RUN) {
+	console.log(JSON.stringify(submitted, null, 2));
 	process.exit(0);
 }
 

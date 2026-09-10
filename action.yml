@@ -28,7 +28,7 @@ inputs:
   reasoning_effort:
     description: reasoning_effort sent to the model (empty = not sent)
     required: false
-    default: medium
+    default: low
 runs:
   using: composite
   steps:
