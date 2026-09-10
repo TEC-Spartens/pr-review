@@ -25,6 +25,10 @@ inputs:
     description: Served model id
     required: false
     default: ai-model
+  reasoning_effort:
+    description: reasoning_effort sent to the model (empty = not sent)
+    required: false
+    default: medium
 runs:
   using: composite
   steps:
@@ -39,6 +43,7 @@ runs:
         OPENAI_BASE_URL: ${{ inputs.openai_base_url }}
         OPENAI_API_KEY: ${{ inputs.openai_api_key }}
         OPENAI_MODEL: ${{ inputs.openai_model }}
+        REASONING_EFFORT: ${{ inputs.reasoning_effort }}
         REVIEW_TOKEN: ${{ inputs.review_token }}
         RESOLVE_TOKEN: ${{ inputs.resolve_token }}
         EXTRA_PROMPT: ${{ inputs.extra_prompt }}

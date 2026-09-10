@@ -69,6 +69,7 @@ const env = {
 	baseUrl: v1Url(required('OPENAI_BASE_URL')),
 	apiKey: required('OPENAI_API_KEY'),
 	model: process.env.OPENAI_MODEL || 'ai-model',
+	reasoningEffort: process.env.REASONING_EFFORT ?? 'medium',
 	reviewToken: required('REVIEW_TOKEN'),
 	resolveToken: process.env.RESOLVE_TOKEN || required('REVIEW_TOKEN'),
 	repository: required('GITHUB_REPOSITORY'),
@@ -110,43 +111,56 @@ const model = wrapLanguageModel({
 const maxSteps = Number.isFinite(env.maxSteps) && env.maxSteps > 0 ? env.maxSteps : 14;
 const CONTEXT_CAP = 140_000;
 
-const logStep = (step: StepResult<ToolSet>, prefix = '') => {
+const logStep = (step: StepResult<ToolSet>) => {
 	const toolsUsed = step.toolCalls.map((call) => call.toolName).join(',') || 'none';
 	console.log(
-		`${prefix}step=${step.stepNumber} in=${step.usage.inputTokens ?? 0} out=${step.usage.outputTokens ?? 0} finish=${step.finishReason} tools=${toolsUsed}`,
+		`step=${step.stepNumber} in=${step.usage.inputTokens ?? 0} out=${step.usage.outputTokens ?? 0} finish=${step.finishReason} tools=${toolsUsed} reasoning=${step.reasoningText?.length ?? 0}`,
 	);
-	if (toolsUsed === 'none' && step.text) {
-		console.log(`${prefix}step=${step.stepNumber} text=${step.text.slice(0, 400)}`);
+	if (step.finishReason !== 'tool-calls') {
+		if (step.reasoningText) console.log(`step=${step.stepNumber} reasoning=${step.reasoningText.slice(-400)}`);
+		if (step.text) console.log(`step=${step.stepNumber} text=${step.text.slice(0, 400)}`);
 	}
+};
+
+// finish=length leaves parsed tool calls unexecuted; replaying them without results is a provider error
+const dropDanglingToolCalls = (messages: ModelMessage[]) => {
+	const answered = new Set(
+		messages.flatMap((msg) =>
+			msg.role === 'tool' && Array.isArray(msg.content)
+				? msg.content.flatMap((part) => (part.type === 'tool-result' ? [part.toolCallId] : []))
+				: [],
+		),
+	);
+	return messages.flatMap((msg) => {
+		if (msg.role !== 'assistant' || !Array.isArray(msg.content)) return [msg];
+		const content = msg.content.filter((part) => part.type !== 'tool-call' || answered.has(part.toolCallId));
+		return content.length ? [{ ...msg, content }] : [];
+	});
 };
 
 const agent = new ToolLoopAgent({
 	model,
 	instructions: SYSTEM,
 	tools,
-	toolChoice: 'required',
 	temperature: 0.2,
-	maxOutputTokens: 2048,
+	maxOutputTokens: 16_384,
+	providerOptions: env.reasoningEffort ? { openai: { reasoningEffort: env.reasoningEffort } } : undefined,
 	stopWhen: [isStepCount(maxSteps), () => submitted !== undefined, ({ steps }) => isDoomLoop(steps)],
 	prepareStep: ({ stepNumber, steps, messages }) => {
 		const compacted = compactMessages(messages);
 		const lastIn = steps.at(-1)?.usage.inputTokens ?? 0;
-		const lastHadNoTools = steps.at(-1)?.toolCalls.length === 0;
 		const forced =
 			stepNumber >= maxSteps - 1
 				? 'Step budget reached'
-				: lastHadNoTools
-					? 'You wrote text instead of calling a tool'
-					: lastIn > CONTEXT_CAP
-						? 'Context window filling'
-						: isDoomLoop(steps)
-							? 'Repeated identical tool calls'
-							: undefined;
+				: lastIn > CONTEXT_CAP
+					? 'Context window filling'
+					: isDoomLoop(steps)
+						? 'Repeated identical tool calls'
+						: undefined;
 		if (!forced) return { messages: compacted };
 		return {
 			activeTools: ['submit_review'] as ['submit_review'],
 			toolChoice: { type: 'tool' as const, toolName: 'submit_review' as const },
-			maxOutputTokens: 8192,
 			messages: [
 				...compacted,
 				{ role: 'user' as const, content: `${forced}. Call submit_review now. Put comments, summary, and prBody in the tool arguments.` },
@@ -168,7 +182,7 @@ const prompt = [
 
 const abortSignal = AbortSignal.timeout(10 * 60 * 1000);
 const CORRECTION =
-	'Invalid: assistant text is ignored. Call a tool. When finished, call submit_review with comments, summary, and prBody in the tool arguments.';
+	'Invalid turn: assistant text is ignored and truncated output is discarded. Reply with a tool call only, keep reasoning short. When finished, call submit_review with comments, summary, and prBody in the tool arguments.';
 
 const run = async (input: { prompt: string } | { messages: ModelMessage[] }) => {
 	try {
@@ -181,11 +195,11 @@ const run = async (input: { prompt: string } | { messages: ModelMessage[] }) => 
 
 let result = await run({ prompt });
 for (let i = 0; i < 2 && !submitted; i++) {
-	console.log('model skipped tools; sending correction');
+	console.log(`model ended with finish=${result?.finishReason ?? 'error'}; sending correction`);
 	result = await run({
 		messages: [
 			{ role: 'user', content: prompt },
-			...(result?.responseMessages ?? []),
+			...dropDanglingToolCalls(result?.responseMessages ?? []),
 			{ role: 'user', content: CORRECTION },
 		],
 	});

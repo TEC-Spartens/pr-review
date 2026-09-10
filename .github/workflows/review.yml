@@ -24,6 +24,9 @@ on:
       model:
         type: string
         default: ai-model
+      reasoning_effort:
+        type: string
+        default: medium
     secrets:
       OPENAI_BASE_URL:
         required: true
@@ -104,6 +107,7 @@ jobs:
           OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_MODEL: ${{ inputs.model }}
+          REASONING_EFFORT: ${{ inputs.reasoning_effort }}
           REVIEW_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
           RESOLVE_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
